@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Initials classifier</title>
+<style>
+  :root{
+    --ink:#1c2024; --sub:#5c6570; --line:#d8dce1; --bg:#f7f8f9; --card:#ffffff;
+    --accent:#2f6f4f; --accent-soft:#e6f1ec; --danger:#b3382c;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; font-family:var(--sans); background:var(--bg); color:var(--ink); padding:32px 20px 60px;}
+  .wrap{max-width:960px; margin:0 auto;}
+  h1{font-size:20px; font-weight:600; margin:0 0 4px;}
+  .lede{color:var(--sub); font-size:14px; margin:0 0 24px; line-height:1.5;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px;}
+  .card h2{font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--sub); margin:0 0 14px;}
+  .modelrow{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  .modelrow input[type=text]{flex:1; min-width:240px; font-family:var(--mono); font-size:13px; padding:9px 10px; border:1px solid var(--line); border-radius:6px;}
+  .badge{font-size:12px; padding:3px 9px; border-radius:999px; font-weight:600;}
+  .badge.ok{background:var(--accent-soft); color:var(--accent);}
+  .badge.err{background:#fbeae8; color:var(--danger);}
+  .badge.pending{background:var(--bg); color:var(--sub); border:1px solid var(--line);}
+  .drop{border:1.5px dashed var(--line); border-radius:8px; padding:28px 20px; text-align:center; color:var(--sub); font-size:14px; cursor:pointer; margin-top:16px;}
+  .drop.disabled{opacity:.5; cursor:not-allowed;}
+  .drop.drag{border-color:var(--accent); background:var(--accent-soft); color:var(--ink);}
+  .drop input{display:none;}
+  .stage{position:relative; display:none; margin-top:16px; border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+  .stage.active{display:block;}
+  .stage canvas{display:block; width:100%; height:auto; cursor:crosshair;}
+  button{font-family:var(--sans); font-size:13px; font-weight:600; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--ink); padding:9px 14px; cursor:pointer;}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  button:hover:not(:disabled){filter:brightness(0.97);}
+  .row{display:flex; gap:10px; align-items:center; margin-top:14px; flex-wrap:wrap;}
+  .status{font-size:13px; color:var(--sub);}
+  .predictions{display:none; margin-top:6px;}
+  .predictions.active{display:block;}
+  .predlist{display:flex; flex-direction:column; gap:8px;}
+  .pred{display:flex; align-items:center; gap:10px; font-size:13px;}
+  .pred .name{font-family:var(--mono); font-weight:700; width:64px;}
+  .pred .bar{flex:1; height:8px; background:var(--bg); border-radius:4px; overflow:hidden; border:1px solid var(--line);}
+  .pred .bar > div{height:100%; background:var(--accent);}
+  .pred .pct{width:48px; text-align:right; color:var(--sub); font-family:var(--mono);}
+  .thumbwrap{display:flex; gap:16px; align-items:flex-start; margin-top:10px;}
+  .thumbwrap img{width:120px; border:1px solid var(--line); border-radius:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Initials classifier</h1>
+  <p class="lede">Loads your own trained model (converted with train_model.py) and predicts who a handwritten crop belongs to. Runs entirely in this browser — nothing is uploaded anywhere.</p>
+
+  <div class="card">
+    <h2>1. Load model</h2>
+    <p class="status">Point this at the <code>tfjs_model</code> folder from training (needs <code>model.json</code> + a matching <code>labels.json</code> alongside it, hosted somewhere this page can fetch — e.g. GitHub Pages, or the same folder if running locally).</p>
+    <div class="modelrow">
+      <input type="text" id="modelUrl" placeholder="https://your-site.com/tfjs_model/model.json" value="./tfjs_model/model.json">
+      <button class="primary" id="loadModelBtn">Load model</button>
+      <span class="badge pending" id="modelBadge">Not loaded</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. Add a screenshot</h2>
+    <label class="drop disabled" id="drop" for="fileInput">
+      <div><b>Click to upload</b> or drag an image here</div>
+      <div class="status">Load a model first</div>
+      <input type="file" id="fileInput" accept="image/*">
+    </label>
+    <div class="stage" id="stage">
+      <canvas id="canvas"></canvas>
+    </div>
+    <div class="row" id="cropRow" style="display:none;">
+      <span class="status">Drag a box around one initial, then classify it.</span>
+      <button class="primary" id="classifyBtn" disabled>Classify selection</button>
+    </div>
+  </div>
+
+  <div class="card predictions" id="predictionsCard">
+    <h2>3. Prediction</h2>
+    <div class="thumbwrap">
+      <img id="cropThumb" alt="Selected crop">
+      <div class="predlist" id="predlist"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.20.0/tf.min.js"></script>
+<script>
+const modelUrlInput = document.getElementById('modelUrl');
+const loadModelBtn = document.getElementById('loadModelBtn');
+const modelBadge = document.getElementById('modelBadge');
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const cropRow = document.getElementById('cropRow');
+const classifyBtn = document.getElementById('classifyBtn');
+const predictionsCard = document.getElementById('predictionsCard');
+const cropThumb = document.getElementById('cropThumb');
+const predlist = document.getElementById('predlist');
+
+let model = null;
+let identityNames = [];
+let markingNames = [];
+let dragging = false, dragStart = null, selection = null;
+const IMG_SIZE = 96; // must match IMG_SIZE in train_model.py
+
+function setBadge(state, text){
+  modelBadge.className = 'badge ' + state;
+  modelBadge.textContent = text;
+}
+
+loadModelBtn.addEventListener('click', async () => {
+  const url = modelUrlInput.value.trim();
+  if(!url) return;
+  setBadge('pending', 'Loading…');
+  try{
+    model = await tf.loadLayersModel(url);
+    // labels.json is expected next to model.json
+    const labelsUrl = url.replace(/model\.json$/, 'labels.json');
+    const res = await fetch(labelsUrl);
+    if(!res.ok) throw new Error('labels.json not found next to model.json');
+    const labels = await res.json();
+    identityNames = labels.identities;
+    markingNames = labels.markings;
+    setBadge('ok', `Loaded (${identityNames.length} people, ${markingNames.length} marking types)`);
+    drop.classList.remove('disabled');
+  }catch(err){
+    setBadge('err', 'Failed: ' + err.message);
+    model = null;
+  }
+});
+
+function loadImageFile(file){
+  if(!model){ return; }
+  if(!file || !file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const image = new Image();
+    image.onload = () => {
+      const maxW = 900;
+      const displayScale = Math.min(1, maxW / image.width);
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.style.width = (image.width * displayScale) + 'px';
+      canvas.style.height = (image.height * displayScale) + 'px';
+      ctx.drawImage(image, 0, 0);
+      stage.classList.add('active');
+      cropRow.style.display = 'flex';
+      predictionsCard.classList.remove('active');
+      selection = null;
+      classifyBtn.disabled = true;
+    };
+    image.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+fileInput.addEventListener('change', (e) => loadImageFile(e.target.files[0]));
+drop.addEventListener('dragover', (e) => { e.preventDefault(); if(model) drop.classList.add('drag'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); loadImageFile(e.dataTransfer.files[0]); });
+
+function canvasCoords(evt){
+  const rect = canvas.getBoundingClientRect();
+  return { x: (evt.clientX - rect.left) * (canvas.width / rect.width), y: (evt.clientY - rect.top) * (canvas.height / rect.height) };
+}
+canvas.addEventListener('mousedown', (e) => { dragging = true; dragStart = canvasCoords(e); });
+window.addEventListener('mousemove', (e) => {
+  if(!dragging) return;
+  const cur = canvasCoords(e);
+  selection = {
+    x: Math.min(dragStart.x, cur.x), y: Math.min(dragStart.y, cur.y),
+    w: Math.abs(cur.x - dragStart.x), h: Math.abs(cur.y - dragStart.y)
+  };
+});
+window.addEventListener('mouseup', () => {
+  if(!dragging) return;
+  dragging = false;
+  classifyBtn.disabled = !(selection && selection.w > 8 && selection.h > 8);
+});
+
+classifyBtn.addEventListener('click', async () => {
+  if(!selection || !model) return;
+  const c = document.createElement('canvas');
+  c.width = IMG_SIZE; c.height = IMG_SIZE;
+  const cx = c.getContext('2d');
+  cx.drawImage(canvas, selection.x, selection.y, selection.w, selection.h, 0, 0, IMG_SIZE, IMG_SIZE);
+  cropThumb.src = c.toDataURL('image/png');
+
+  // Model has three outputs, in the order defined during training:
+  // [identity, underline, marking]. tf.js preserves that order.
+  const outputs = tf.tidy(() => {
+    let t = tf.browser.fromPixels(c, 1); // grayscale channel, matches training
+    t = t.toFloat().div(255.0);
+    t = t.expandDims(0); // batch dim
+    return model.predict(t);
+  });
+  const [identityTensor, underlineTensor, markingTensor] = outputs;
+  const identityScores = await identityTensor.data();
+  const underlineScore = (await underlineTensor.data())[0];
+  const markingScores = await markingTensor.data();
+  outputs.forEach(t => t.dispose());
+
+  const rankedIdentity = identityNames
+    .map((name, i) => ({ name, score: identityScores[i] }))
+    .sort((a, b) => b.score - a.score);
+  const rankedMarking = markingNames
+    .map((name, i) => ({ name: name || '(none)', score: markingScores[i] }))
+    .sort((a, b) => b.score - a.score);
+
+  function renderBar(name, score){
+    const pct = Math.round(score * 100);
+    const div = document.createElement('div');
+    div.className = 'pred';
+    div.innerHTML = `<span class="name">${name}</span><div class="bar"><div style="width:${pct}%"></div></div><span class="pct">${pct}%</span>`;
+    return div;
+  }
+
+  predlist.innerHTML = '';
+
+  const identityHeader = document.createElement('div');
+  identityHeader.className = 'status';
+  identityHeader.textContent = 'Who:';
+  predlist.appendChild(identityHeader);
+  rankedIdentity.forEach(({ name, score }) => predlist.appendChild(renderBar(name, score)));
+
+  const underlineHeader = document.createElement('div');
+  underlineHeader.className = 'status';
+  underlineHeader.style.marginTop = '8px';
+  underlineHeader.textContent = 'Underlined:';
+  predlist.appendChild(underlineHeader);
+  predlist.appendChild(renderBar('Yes', underlineScore));
+  predlist.appendChild(renderBar('No', 1 - underlineScore));
+
+  const markingHeader = document.createElement('div');
+  markingHeader.className = 'status';
+  markingHeader.style.marginTop = '8px';
+  markingHeader.textContent = 'Marking:';
+  predlist.appendChild(markingHeader);
+  rankedMarking.forEach(({ name, score }) => predlist.appendChild(renderBar(name, score)));
+
+  predictionsCard.classList.add('active');
+});
+</script>
+</body>
+</html>
